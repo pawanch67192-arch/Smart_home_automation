@@ -1,0 +1,250 @@
+// DHARANI CREATIONS - ADVANCED SMART HOME
+
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // Change to 0x3F if LCD does not work
+
+// Sensor Pins
+const int smokeAOPin = A2;      // MQ2 Analog
+const int ldrSensor = A0;       
+const int flameSensor = 2;      
+const int rainSensor = 5;       
+
+// Output Pins
+const int buzzer = 4;
+const int lightLED = 3;   // White LED
+const int alertLED = 6;   // Red LED
+
+// Thresholds
+const int SMOKE_THRESHOLD = 400;
+const int LDR_DARK_THRESHOLD = 500;
+
+// Variables
+unsigned long lastAlertTime = 0;
+const unsigned long ALERT_DISPLAY_TIME = 3000;
+const unsigned long AUTO_ALERT_OFF_TIME = 10000; // 10 seconds automatic off
+bool alertActive = false;
+String currentAlert = "";
+
+void setup() {
+  // Initialize inputs
+  pinMode(smokeAOPin, INPUT);
+  pinMode(ldrSensor, INPUT);
+  pinMode(flameSensor, INPUT);
+  pinMode(rainSensor, INPUT);
+
+  // Initialize outputs
+  pinMode(buzzer, OUTPUT);
+  pinMode(lightLED, OUTPUT);
+  pinMode(alertLED, OUTPUT);
+
+  // Initialize states
+  digitalWrite(lightLED, LOW);
+  digitalWrite(alertLED, LOW);
+  digitalWrite(buzzer, LOW);
+  
+  // LCD setup
+  lcd.init();
+  lcd.backlight();
+
+  // Serial setup
+  Serial.begin(9600);
+
+  // Startup message
+  displayStartupMessage();
+}
+
+void displayStartupMessage() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("  SMART HOME  ");
+  lcd.setCursor(0, 1);
+  lcd.print("  ADVANCED v2.0");
+  delay(2000);
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Monitoring...");
+  delay(1000);
+  lcd.clear();
+}
+
+void loop() {
+  // Read sensor values
+  int smokeValue = analogRead(smokeAOPin);
+  int ldrValue = analogRead(ldrSensor);
+  bool flameDetected = digitalRead(flameSensor) == LOW;
+  bool rainDetected = digitalRead(rainSensor) == LOW;
+
+  // Process alerts (LDR excluded from alerts)
+  checkAlerts(smokeValue, flameDetected, rainDetected);
+  
+  // Automatic alarm off after 10 seconds
+  checkAutoAlarmOff();
+  
+  // Display information
+  if (!alertActive || (millis() - lastAlertTime > ALERT_DISPLAY_TIME)) {
+    displayNormalStatus(smokeValue, ldrValue, flameDetected, rainDetected);
+  }
+
+  // Control light based on LDR (NO ALARM for LDR)
+  controlLight(ldrValue);
+  
+  // Serial logging
+  logSerialData(smokeValue, ldrValue, flameDetected, rainDetected);
+
+  delay(500); // Faster response time
+}
+
+void checkAlerts(int smoke, bool flame, bool rain) {
+  bool newAlert = false;
+  String alertMessage = "";
+  
+  if (flame) {
+    alertMessage = "FIRE ALERT!";
+    newAlert = true;
+  } 
+  else if (smoke > SMOKE_THRESHOLD) {
+    alertMessage = "SMOKE ALERT!";
+    newAlert = true;
+  }
+  else if (rain) {
+    alertMessage = "RAIN ALERT!";
+    newAlert = true;
+  }
+
+  if (newAlert && alertMessage != currentAlert) {
+    currentAlert = alertMessage;
+    alertActive = true;
+    lastAlertTime = millis();
+    triggerAlert(alertMessage);
+  }
+}
+
+void checkAutoAlarmOff() {
+  // Automatic alarm off after 10 seconds if conditions are normal
+  if (alertActive && (millis() - lastAlertTime > AUTO_ALERT_OFF_TIME)) {
+    // Check if alert conditions still exist
+    int smokeValue = analogRead(smokeAOPin);
+    bool flameDetected = digitalRead(flameSensor) == LOW;
+    bool rainDetected = digitalRead(rainSensor) == LOW;
+    
+    // If conditions are back to normal, turn off alarm
+    if (!flameDetected && smokeValue <= SMOKE_THRESHOLD && !rainDetected) {
+      stopAlert();
+      Serial.println("✅ ALERT: Auto OFF - Conditions Normal");
+    }
+  }
+}
+
+void triggerAlert(String message) {
+  // Activate buzzer and LED for alerts
+  digitalWrite(buzzer, HIGH);
+  digitalWrite(alertLED, HIGH);
+  
+  // Display alert
+  displayAlertMessage(message);
+  
+  // Serial alert
+  Serial.println("🚨 ALERT: " + message + " 🚨");
+  Serial.println("⏰ Auto OFF in 10 seconds if conditions normalize");
+}
+
+void displayAlertMessage(String message) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("ALERT DETECTED");
+  lcd.setCursor(0, 1);
+  
+  // Fit alert message on second line
+  if (message.length() <= 16) {
+    lcd.print(message);
+  } else {
+    lcd.print(message.substring(0, 16));
+  }
+}
+
+void displayNormalStatus(int smoke, int ldr, bool flame, bool rain) {
+  lcd.clear();
+  
+  // Line 1: Smoke and LDR values
+  lcd.setCursor(0, 0);
+  lcd.print("S:");
+  lcd.print(smoke);
+  
+  lcd.setCursor(7, 0);
+  lcd.print("L:");
+  lcd.print(ldr);
+  
+  lcd.setCursor(13, 0);
+  lcd.print("Li:");
+  lcd.print(ldr < LDR_DARK_THRESHOLD ? "ON" : "OFF");
+
+  // Line 2: Flame, Rain, Alert Status
+  lcd.setCursor(0, 1);
+  lcd.print("F:");
+  lcd.print(flame ? "Y" : "N");
+  
+  lcd.setCursor(4, 1);
+  lcd.print("R:");
+  lcd.print(rain ? "Y" : "N");
+  
+  lcd.setCursor(8, 1);
+  lcd.print("A:");
+  lcd.print(alertActive ? "Y" : "N");
+  
+  // Show auto-off countdown if alert is active
+  if (alertActive) {
+    lcd.setCursor(12, 1);
+    int remainingTime = (AUTO_ALERT_OFF_TIME - (millis() - lastAlertTime)) / 1000;
+    if (remainingTime > 0) {
+      lcd.print(remainingTime);
+      lcd.print("s");
+    }
+  }
+}
+
+void controlLight(int ldrValue) {
+  // LDR controls only light - NO ALARM
+  if (ldrValue < LDR_DARK_THRESHOLD) {      
+    digitalWrite(lightLED, HIGH);   // Turn ON light in dark
+  } else {
+    digitalWrite(lightLED, LOW);    // Turn OFF light in brightness
+  }
+}
+
+void logSerialData(int smoke, int ldr, bool flame, bool rain) {
+  Serial.print("📊 Sensors -> ");
+  Serial.print("Smoke: ");
+  Serial.print(smoke);
+  Serial.print(" | LDR: ");
+  Serial.print(ldr);
+  Serial.print(" | Flame: ");
+  Serial.print(flame ? "DETECTED" : "CLEAR");
+  Serial.print(" | Rain: ");
+  Serial.print(rain ? "DETECTED" : "CLEAR");
+  
+  // Add light status
+  Serial.print(" | Light: ");
+  Serial.print(ldr < LDR_DARK_THRESHOLD ? "ON" : "OFF");
+  Serial.print(" | Alert: ");
+  Serial.print(alertActive ? "ACTIVE" : "INACTIVE");
+  
+  // Show auto-off countdown
+  if (alertActive) {
+    int remainingTime = (AUTO_ALERT_OFF_TIME - (millis() - lastAlertTime)) / 1000;
+    Serial.print(" | AutoOFF: ");
+    Serial.print(remainingTime);
+    Serial.print("s");
+  }
+  Serial.println();
+}
+
+void stopAlert() {
+  digitalWrite(buzzer, LOW);
+  digitalWrite(alertLED, LOW);
+  alertActive = false;
+  currentAlert = "";
+  lcd.clear();
+}
